@@ -1,4 +1,6 @@
-# Document Chat
+# digital-twin-MU
+
+## Document Chat
 
 A small FastAPI chat app that answers from a Google Gemini File Search store and shows the cited source filenames. The API key remains on the server. Document indexing uses Google's direct upload-to-store API, so indexed content persists in the File Search store rather than depending on temporary Files API uploads.
 
@@ -77,7 +79,7 @@ Replace `YOUR_CHATBOT_DOMAIN` with the deployed app's origin. The script opens t
 
 ## Deploy
 
-Deploy to Render, Railway, or a VPS with Python installed. Use `pip install -r requirements.txt` as the build/install command and `uvicorn app:app --host 0.0.0.0 --port $PORT` as the start command (on a VPS, use a fixed port such as `8000`). Set `GEMINI_API_KEY`, `GEMINI_MODEL`, and `ALLOWED_ORIGINS` in the host's secret/environment settings. Set `FILE_SEARCH_STORE_NAME` to the value in your local `store_name.txt`; the environment variable is useful when the host does not persist local files. Do not commit `.env`, store credentials, or private documents.
+Deploy to Render, Railway, or a VPS with Python installed. Use `pip install -r requirements.txt` as the build/install command and `uvicorn app:app --host 0.0.0.0 --port $PORT` as the start command (on a VPS, use a fixed port such as `8000`). Set `GEMINI_API_KEY`, `GEMINI_MODEL`, and `ALLOWED_ORIGINS` in the host's secret/environment settings. Set `FILE_SEARCH_STORE_NAME` to the value in your local `store_name.txt`; the environment variable is useful when the host does not persist local files. The PDFs are intentionally excluded from Git: once indexed, their content persists in Google's managed File Search store, so the deployed app needs the store name and API key, not local copies of the PDFs. If deploying to a different Google project, run ingestion there with the documents available locally, then configure that project's store name. Do not commit `.env`, store credentials, or private documents.
 
 The built-in rate limiter is process-local. For multi-instance production deployments, use a shared rate-limit backend or an edge/API gateway limit.
 
