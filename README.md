@@ -1,4 +1,4 @@
-# digital-twin-MU
+# digital-twin-RTMNU
 
 ## Document Chat
 
