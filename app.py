@@ -1,3 +1,5 @@
+import base64
+import binascii
 import logging
 import os
 from pathlib import Path
@@ -23,7 +25,16 @@ SYSTEM_INSTRUCTION = (
     "say you don't have that information. Be concise and friendly."
 )
 MAX_MESSAGE_LENGTH = 2000
+MAX_AUDIO_BASE64_LENGTH = 7_000_000
 GEMINI_REQUEST_TIMEOUT_SECONDS = 60
+ALLOWED_AUDIO_MIME_TYPES = {
+    "audio/webm",
+    "audio/ogg",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-wav",
+}
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -42,6 +53,15 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[str]
+
+
+class TranscribeRequest(BaseModel):
+    audio: str = Field(min_length=1, max_length=MAX_AUDIO_BASE64_LENGTH)
+    mime_type: str = Field(default="audio/webm", min_length=1, max_length=100)
+
+
+class TranscribeResponse(BaseModel):
+    text: str
 
 
 limiter = Limiter(key_func=get_remote_address)
@@ -197,6 +217,48 @@ def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     if not answer or not sources:
         return ChatResponse(answer=FALLBACK_ANSWER, sources=[])
     return ChatResponse(answer=answer, sources=sources)
+
+
+@app.post("/transcribe", response_model=TranscribeResponse)
+@limiter.limit("10/minute")
+def transcribe(payload: TranscribeRequest, request: Request) -> TranscribeResponse:
+    base_mime_type = payload.mime_type.split(";", 1)[0].strip().lower()
+    if base_mime_type not in ALLOWED_AUDIO_MIME_TYPES:
+        raise HTTPException(status_code=422, detail="Unsupported audio format.")
+
+    try:
+        audio_bytes = base64.b64decode(payload.audio, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid audio payload.") from exc
+
+    if not audio_bytes:
+        raise HTTPException(status_code=422, detail="Audio recording is empty.")
+
+    client = _get_gemini_client()
+    from google.genai import types
+
+    try:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[
+                "Transcribe the spoken audio accurately into plain text. Return only the transcribed words without commentary.",
+                types.Part.from_bytes(data=audio_bytes, mime_type=base_mime_type),
+            ],
+        )
+    except TimeoutError as exc:
+        logger.warning("Gemini audio transcription request timed out")
+        raise HTTPException(
+            status_code=504,
+            detail="Voice transcription is taking longer than expected. Please try again.",
+        ) from exc
+    except Exception as exc:
+        logger.exception("Gemini audio transcription request failed")
+        raise HTTPException(
+            status_code=502,
+            detail="Couldn't transcribe audio right now. Please try typing your question.",
+        ) from exc
+
+    return TranscribeResponse(text=(_get_field(response, "text", "") or "").strip())
 
 
 @app.exception_handler(RateLimitExceeded)

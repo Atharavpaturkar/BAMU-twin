@@ -1,3 +1,4 @@
+import base64
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -31,6 +32,16 @@ class FakeInteractions:
         return self.result
 
 
+class FakeModels:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.kwargs: dict[str, object] = {}
+
+    def generate_content(self, **kwargs: object) -> SimpleNamespace:
+        self.kwargs = kwargs
+        return SimpleNamespace(text=self.text)
+
+
 def install_fake_client(monkeypatch, result: SimpleNamespace) -> FakeInteractions:
     interactions = FakeInteractions(result)
     monkeypatch.setattr(chat_app, "_read_store_name", lambda: "fileSearchStores/test")
@@ -40,6 +51,16 @@ def install_fake_client(monkeypatch, result: SimpleNamespace) -> FakeInteraction
         lambda: SimpleNamespace(interactions=interactions),
     )
     return interactions
+
+
+def install_fake_models(monkeypatch, text: str) -> FakeModels:
+    models = FakeModels(text)
+    monkeypatch.setattr(
+        chat_app,
+        "_get_gemini_client",
+        lambda: SimpleNamespace(models=models),
+    )
+    return models
 
 
 def test_chat_uses_file_search_and_returns_sources(monkeypatch) -> None:
@@ -126,3 +147,56 @@ def test_widget_script_is_served() -> None:
 
     assert response.status_code == 200
     assert "document-chat-widget-button" in response.text
+    assert 'frame.allow = "microphone"' in response.text
+
+
+def test_index_serves_mic_button() -> None:
+    response = TestClient(chat_app.app).get("/")
+
+    assert response.status_code == 200
+    assert 'id="mic-button"' in response.text
+    assert 'aria-label="Start voice input"' in response.text
+
+
+def test_transcribe_returns_text(monkeypatch) -> None:
+    models = install_fake_models(monkeypatch, "  What is the TLR score of 2025?  ")
+    audio_b64 = base64.b64encode(b"fake-audio-bytes").decode("ascii")
+    response = TestClient(chat_app.app).post(
+        "/transcribe",
+        json={"audio": audio_b64, "mime_type": "audio/webm;codecs=opus"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"text": "What is the TLR score of 2025?"}
+    assert models.kwargs["model"] == chat_app.MODEL_NAME
+
+
+def test_transcribe_rejects_invalid_payload() -> None:
+    response = TestClient(chat_app.app).post(
+        "/transcribe",
+        json={"audio": "not-valid-base64!!!", "mime_type": "audio/webm"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_transcribe_rejects_unsupported_mime_type() -> None:
+    audio_b64 = base64.b64encode(b"fake-audio-bytes").decode("ascii")
+    response = TestClient(chat_app.app).post(
+        "/transcribe",
+        json={"audio": audio_b64, "mime_type": "application/pdf"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_transcribe_without_key_returns_setup_message(monkeypatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    audio_b64 = base64.b64encode(b"fake-audio-bytes").decode("ascii")
+    response = TestClient(chat_app.app).post(
+        "/transcribe",
+        json={"audio": audio_b64, "mime_type": "audio/webm"},
+    )
+
+    assert response.status_code == 503
+    assert "missing GEMINI_API_KEY" in response.json()["detail"]
